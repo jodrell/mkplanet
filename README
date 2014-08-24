@@ -1,0 +1,24 @@
+README
+
+mkplanet generates images of imaginary worlds. It uses Torben Mogensen's
+"planet" tool, which generates 2D maps using a fractal algorithm, and
+Xplanet, which renders the map onto a 3D sphere. mkplanet also adds
+other effects to improve the realism of the final image, including
+cratering, clouds, and an atmospheric haze.
+                
+REQUIREMENTS
+
+mkplanet requires that planet and Xplanet be installed on the system. 
+Xplanet is widely available via most distribution's package system (ie 
+yum or apt), but you may need to compile and install planet yourself. 
+The author of mkplanet has created packages for RPM based Linux 
+distributions, which can be found at http://jodrell.org/files.
+    
+You will also need either ImageMagick or GraphicsMagick as mkplanet has
+to convert and composite images as part of the process.
+
+COPYRIGHT
+
+mkplanet is Copyright 2012 Gavin Brown. This program is Free Software; 
+you can use it and/or modify it under either the GNU General Public 
+License or the Perl Artistic License.

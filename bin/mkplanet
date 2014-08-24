@@ -1,0 +1,369 @@
+#!/usr/bin/perl
+use File::Basename qw(dirname basename);
+use Getopt::Long;
+use strict;
+
+my $t0 = time();
+
+#
+# options:
+#
+my %opt = (
+	'seed'			=> rand(),
+	'altitude'		=> (0.15 * rand()) - 0.1,
+	'distance-variation'	=> 0.035,
+	'altitude-variation'	=> 0.1,
+	'planet-map-generator'	=> 'planet-map-generator',
+	'colors'		=> 'earthlike-temperate',
+	'geometry' 		=> '2000x2000',
+	'date'			=> '20110601.043000',
+	'longitude'		=> 180,
+	'output-dir'		=> '/tmp',
+	'cratered'		=> undef,
+	'noclouds'		=> undef,
+	'noatmosphere'		=> undef,
+	'nostars'		=> undef,
+	'debug'			=> 1,
+	'help'			=> undef,
+);
+
+#
+# get options from command line:
+#
+GetOptions(
+	\%opt,
+	'seed=f',
+	'altitude=f',
+	'distance-variation=f',
+	'altitude-variation=f',
+	'colors=s',
+	'output-dir=s',
+	'cratered',
+	'noclouds',
+	'noatmosphere',
+	'nostars',
+	'debug',
+	'help',
+	'geometry=s',
+	'date=s',
+	'longitude=i',
+	'planet-map-generator=s',
+);
+
+#
+# print help:
+#
+if ($opt{'help'}) {
+	undef $/;
+	print <DATA>;
+	exit(0);
+}
+
+my $base = dirname(dirname(__FILE__));
+debug('base directory is "%s"', $base);
+
+chomp(my $planet = `which $opt{'planet-map-generator'} 2>/dev/null`);
+if (!-x $planet) {
+	debug("Can't find the '%s' executable!", $opt{'planet-map-generator'});
+	exit(1);
+
+} else {
+	debug("generating planet map using '%s'", $planet);
+
+}
+
+chomp(my $xplanet = `which xplanet 2>/dev/null`);
+if (!-x $xplanet) {
+	debug("Can't find the 'xplanet' executable!");
+	exit(1);
+
+} else {
+	debug("rendering planet using '%s'", $xplanet);
+
+}
+
+my ($convert, $composite);
+chomp(my $magick = `which gm 2>/dev/null`);
+if (-x $magick) {
+	$convert   = 'gm convert';
+	$composite = 'gm composite';
+
+	debug("Using GraphicsMagick for conversion and compositing");
+
+} else {
+	chomp($magick = `which convert 2>/dev/null`);
+	if (-x $magick) {
+		$convert   = 'convert';
+		$composite = 'composite';
+
+		debug("Using ImageMagick for conversion and compositing");
+
+	} else {
+		debug("ERROR: Cannot find ImageMagick or GraphicsMagick!");
+		exit(1);
+
+	}
+}
+
+my @craters;
+opendir(DIR, $base.'/share/craters');
+@craters = map { $base.'/share/craters/'.$_ } grep { /\.png$/i } readdir(DIR);
+closedir(DIR);
+
+my @clouds;
+opendir(DIR, $base.'/share/clouds');
+@clouds = map { $base.'/share/clouds/'.$_ } grep { /\.jpg$/i } readdir(DIR);
+closedir(DIR);
+
+my $atmosphere = $base.'/share/atmosphere.png';
+
+my $starfield = $base.'/share/starfield.png';
+
+my $fp = join(
+	'.',
+	int(1000 * $opt{'seed'}),
+	int(1000 * (1+$opt{'altitude'})),
+	int(1000 * $opt{'distance-variation'}),
+	int(1000 * $opt{'altitude-variation'}),
+	$opt{'colors'},
+	int($opt{'cratered'}),
+);
+
+my $prefix = sprintf(
+	'%s/%s-%s',
+	$opt{'output-dir'},
+	basename(__FILE__),
+	$fp,
+);
+debug('prefix is "%s"', $prefix);
+
+#
+# generate the map:
+#
+if (-e sprintf('%s-map.png', $prefix)) {
+	debug('reusing cached map file');
+
+} else {
+	debug("generating map");
+	run(
+		'%s -b -c'.
+		' -w 4096'.
+		' -h 2048'.
+		' -C "%s/share/colours/%s.col"'.
+		' -s %f'.
+		' -i %f'.
+		' -V %f'.
+		' -v %f'.
+		' -o "%s"',
+		$planet,
+		$base,
+		$opt{'colors'},
+		$opt{'seed'},
+		$opt{'altitude'},
+		$opt{'distance-variation'},
+		$opt{'altitude-variation'},
+		sprintf('%s-map.bmp', $prefix),
+	);
+
+	run('%s "%s-map.bmp" "%s-map.png"', $convert, $prefix, $prefix);
+
+	unlink(sprintf('%s-map.bmp', $prefix));
+
+	#
+	# add cratering:
+	#
+	if ($opt{'cratered'}) {
+		debug("compositing cratering");
+
+		rename(sprintf('%s-map.png', $prefix), sprintf('%s-map-uncratered.png', $prefix));
+
+		my $crater = $craters[int(rand(scalar(@craters)-1))];
+		debug('crater map is "%s"', $crater);
+
+		run(
+			'%s -compose Bumpmap "%s" "%s" "%s"',
+			$composite,
+			$crater,
+			sprintf('%s-map-uncratered.png', $prefix),
+			sprintf('%s-map.png', $prefix),
+		);
+
+		unlink(sprintf('%s-map-uncratered.png', $prefix));
+	}
+}
+
+#
+# build xplanet config:
+#
+debug("generating xplanet configuration");
+my $xplanet_config = {
+	'image'		=> sprintf('%s-map.png', $prefix),
+	'shade'		=> 20,
+};
+
+if (!$opt{'noclouds'}) {
+	$xplanet_config->{'cloud_map'} = $clouds[int(rand(scalar(@clouds)-1))],
+	debug('cloud map is "%s"', $xplanet_config->{'cloud_map'});
+}
+
+open(XPLANET_CONFIG, sprintf('>%s-config.txt', $prefix));
+print XPLANET_CONFIG "[earth]\n";
+foreach my $key (keys(%{$xplanet_config})) {
+	debug('xplanet config: %s=%s', $key, $xplanet_config->{$key});
+	printf(XPLANET_CONFIG "%s=%s\n", $key, $xplanet_config->{$key});
+}
+close(XPLANET_CONFIG);
+
+#
+# render the map onto a sphere:
+#
+debug("rendering planet");
+run(
+	'%s'.
+	' -verbosity %d'.
+	' -num_times 1'.
+	' -geometry %s'.
+	' -date %s'.
+	' -longitude %s'.
+	' -config "%s"'.
+	' -searchdir "%s"'.
+	' %s',
+	$xplanet,
+	($opt{'debug'} ? 4 : 0),
+	$opt{'geometry'},
+	$opt{'date'},
+	$opt{'longitude'},
+	sprintf('%s-config.txt', $prefix),
+	sprintf('%s/run/xplanet', $base),
+	($opt{'nostars'} ? sprintf('-transpng "%s-render.png"', $prefix) : sprintf('-background "%s" -output "%s-render.png"', $starfield, $prefix)),
+);
+
+unlink(sprintf('%s-config.txt', $prefix));
+
+#
+# add an atmosphere:
+#
+if (!$opt{'noatmosphere'}) {
+	debug("compositing atmosphere");
+	run(
+		'%s "%s" "%s" "%s"',
+		$composite,
+		$atmosphere,
+		sprintf('%s-render.png', $prefix),
+		sprintf('%s-final.png', $prefix)
+	);
+	unlink(sprintf('%s-render.png', $prefix));
+
+} else {
+	rename(
+		sprintf('%s-render.png', $prefix),
+		sprintf('%s-final.png', $prefix)
+	);
+
+}
+
+#
+# done!
+#
+printf("%s-final.png\n", $prefix);
+
+exit(0);
+
+#
+# utility function: run an external command and check its exit code
+#
+sub run {
+	my ($fmt, @args) = @_;
+	my $cmd = sprintf($fmt, @args);
+	debug('Executing %s', $cmd);
+	my $exit = system($cmd);
+	debug("Command '%s' returned %d (%s)", $cmd, $exit, (0 == $exit ? "that's OK" : "that's an error"));
+	exit($exit) if ($exit != 0);
+}
+
+#
+# utility command: print a debug message to STDERR
+#
+sub debug {
+	return unless ($opt{'debug'});
+	my ($fmt, @params) = @_;
+	my $msg = sprintf(
+		"T+%02ds: %s\n",
+		(time()-$t0),
+		sprintf($fmt, @params)
+	);
+	print STDERR $msg;
+}
+
+__DATA__
+SYNOPSIS
+
+    mkplanet [OPTIONS]
+
+DESCRIPTION
+
+mkplanet generates images of imaginary worlds. It uses Torben Mogensen's 
+"planet" tool, which generates 2D maps using a fractal algorithm, and 
+Xplanet, which renders the map onto a 3D sphere. mkplanet also adds 
+other effects to improve the realism of the final image, including 
+cratering, clouds, and an atmospheric haze.
+
+mkplanet supports a number of command line options, which are described 
+below. Its output will be the filename of the final image. The original 
+2D map of the planet's surface will also be present in the output 
+directory.
+
+REQUIREMENTS
+
+mkplanet requires that planet and Xplanet be installed on the system. 
+Xplanet is widely available via most distribution's package system (ie 
+yum or apt), but you may need to compile and install planet yourself. 
+The author of mkplanet has created packages for RPM based Linux 
+distributions, which can be found at http://jodrell.org/files.
+
+You will also need either ImageMagick or GraphicsMagick as mkplanet has 
+to convert and composite images as part of the process.
+
+COMMAND LINE OPTIONS
+
+--help                          Display this message
+--debug                         Enable debugging (on by default)
+--output-dir=DIR		Set output directory (default: /tmp)
+--seed=VALUE                    Seed (0-1, 4 decimal places). If not set, a
+                                random seed will be used
+--altitude=VALUE                Initial altitude. If not set, a random value
+                                between -0.1 and 0.05 will be used
+--distance-variation=VALUE      Distance contribution to variation
+                                (default: 0.035)
+--altitude-variation=VALUE      Altitude contribution to variation (default
+                                = 0.45)
+--planet-map-generator=VALUE    Path to the planet command (by default,
+                                mkplanet looks for planet-map-generator in
+                                your PATH)
+--colors=VALUE                  Colour file to use (by default, mkplanet
+                                uses its own "earthlike-temperate" file)
+--geometry=VALUE                Size of the final image (default: 2000x2000)
+--date=VALUE                    Specify a particular date for Xplanet to use
+--longitude=VALUE               Specify a particular longitude for Xplanet.
+                                Combined with --longitude, these can be used
+                                to tweak the regions that appear in the final
+                                image, and the position of the day/night
+                                terminator
+--cratered			Add cratering to the planet's surface
+--noclouds                      Don't apply clouds
+--noatmosphere                  Don't add an atmosphere
+--nostars                       Don't add a starfield (the final image will
+                                be transparent instead)
+
+AUTHOR
+
+mkplanet is Copyright 2012 Gavin Brown. This program is Free Software; 
+you can use it and/or modify it under either the GNU General Public 
+License or the Perl Artistic License.
+
+SEE ALSO
+
+* the author's website: http://jodrell.org
+* Torben Mogensen's website: http://www.diku.dk/hjemmesider/ansatte/torbenm
+* Xplanet: http://xplanet.sourceforge.net
+
